@@ -1,0 +1,49 @@
+# =========================
+# Node & Dependencies
+# =========================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# =========================
+# Vite Build Output
+# =========================
+dist/
+dist-ssr/
+build/
+
+# =========================
+# Environment Variables
+# =========================
+# Never commit secrets, API keys, or local config
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# =========================
+# OS & Editor Files
+# =========================
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.suo
+*.sln
+*.sw?
+
+# =========================
+# FUTURE PROOFING (For when we build the AI)
+# =========================
+# This protects you from accidentally committing huge files later
+__pycache__/
+venv/
+.venv/
+*.pth
+*.pt
+*.h5
+data/raw/
+data/processed/
