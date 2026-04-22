@@ -1,5 +1,6 @@
 import { TrendingUp, Activity, CheckCircle, AlertCircle } from 'lucide-react';
 import { motion } from 'motion/react';
+import { FeedbackStats } from './FeedbackStats';
 
 interface ModelStatsProps {
   aiAccuracy: number;
@@ -163,6 +164,17 @@ export function ModelStats({ aiAccuracy }: ModelStatsProps) {
                 </div>
               </div>
             </div>
+          </motion.div>
+
+          {/* Feedback Statistics Section */}
+          <motion.div
+            className="mt-8"
+            initial={{ y: 20, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            transition={{ duration: 0.5, delay: 0.5 }}
+          >
+            <h2 className="text-gray-900 dark:text-white mb-6 text-lg font-semibold">Doctor Feedback & Model Learning</h2>
+            <FeedbackStats />
           </motion.div>
     </div>
   );

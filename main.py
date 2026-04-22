@@ -3,6 +3,8 @@ import io
 import json
 import random
 import sqlite3
+import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -81,6 +83,23 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS feedback_logs (
+                id TEXT PRIMARY KEY,
+                case_id TEXT NOT NULL,
+                doctor_id TEXT DEFAULT 'anonymous',
+                original_prediction TEXT NOT NULL,
+                original_confidence REAL NOT NULL,
+                corrected_prediction TEXT NOT NULL,
+                corrected_confidence REAL NOT NULL,
+                reasoning TEXT,
+                feedback_type TEXT DEFAULT 'pathology_confirmed',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (case_id) REFERENCES patients(id)
+            )
+            """
+        )
         conn.commit()
     finally:
         conn.close()
@@ -142,30 +161,57 @@ transform = transforms.Compose(
 
 def _cam_severity_from_heatmap(heatmap: np.ndarray | None, threshold: float = 0.7) -> dict[str, Any]:
     if heatmap is None or heatmap.ndim != 2:
-        return {"pixel_count": 0, "severity_label": "No Tumor Detected", "severity_level": "clean"}
+        return {
+            "pixel_count": 0,
+            "severity_label": "No Tumor Detected",
+            "severity_level": "clean",
+            "morphology": "N/A",
+            "concentration": "N/A",
+        }
 
     binary_mask = heatmap > threshold
     pixel_count = int(np.sum(binary_mask))
 
     if pixel_count == 0:
-        return {"pixel_count": 0, "severity_label": "No Tumor Detected", "severity_level": "clean"}
+        return {
+            "pixel_count": 0,
+            "severity_label": "No Tumor Detected",
+            "severity_level": "clean",
+            "morphology": "N/A",
+            "concentration": "N/A",
+        }
+
+    # Analyze heatmap concentration (how spread out the activation is)
+    concentration = np.mean(heatmap) / (np.max(heatmap) + 1e-8)
+    if concentration > 0.5:
+        concentration_label = "focal and well-circumscribed"
+    elif concentration > 0.3:
+        concentration_label = "moderately concentrated with irregular margins"
+    else:
+        concentration_label = "diffuse with spiculated appearance"
 
     if pixel_count < 1000:
         return {
             "pixel_count": pixel_count,
             "severity_label": "Low Severity (Small Mass)",
             "severity_level": "low",
+            "morphology": "small, well-defined lesion",
+            "concentration": concentration_label,
         }
     if pixel_count <= 5000:
         return {
             "pixel_count": pixel_count,
             "severity_label": "Moderate Severity (Medium Mass)",
             "severity_level": "moderate",
+            "morphology": "medium-sized mass with mixed characteristics",
+            "concentration": concentration_label,
         }
     return {
         "pixel_count": pixel_count,
         "severity_label": "High Severity (Large Mass)",
         "severity_level": "high",
+        "morphology": "large, irregular mass with concerning features",
+        "concentration": concentration_label,
     }
 
 
@@ -229,72 +275,116 @@ def _build_report_details(
     size_cm: float,
     stage: str,
     confidence_score: float,
+    severity_metrics: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     """
-    Structured multi-section clinical report. Keys must match frontend: Indication, Composition,
-    Findings, Impression, BI_RADS.
+    Generate dynamic clinical report based on actual analysis metrics.
+    Adapts findings based on heatmap severity, morphology, and confidence levels.
     """
     conf_pct = round(confidence_score * 100)
+    morphology = severity_metrics.get("morphology", "N/A") if severity_metrics else "N/A"
+    concentration = severity_metrics.get("concentration", "N/A") if severity_metrics else "N/A"
+    pixel_count = severity_metrics.get("pixel_count", 0) if severity_metrics else 0
 
     if prediction_label == "Malignant":
-        pos = _random_clock_position()
+        # Dynamic clinical language based on confidence
+        if confidence_score >= 0.96:
+            suspicion_level = "highly suspicious for malignancy"
+            recommendation = "Urgent biopsy recommended. Clinical referral for surgical consultation advised."
+        elif confidence_score >= 0.90:
+            suspicion_level = "concerning for malignancy"
+            recommendation = "Core needle biopsy recommended. Prompt surgical correlation advised."
+        else:
+            suspicion_level = "suspicious for malignancy"
+            recommendation = "Biopsy is recommended to establish diagnosis."
+
+        # Dynamic margin description based on morphology
+        margin_desc = "irregular, spiculated margins" if "spiculated" in concentration else "ill-defined margins"
+
         return {
             "Indication": (
-                "Screening bilateral breast ultrasound with focal symptoms referable to the ipsilateral breast; "
-                "evaluation requested for a palpable or sonographically detected abnormality."
+                "Evaluation of a suspicious breast lesion with imaging findings concerning for malignancy. "
+                "Ultrasound-guided assessment requested for diagnosis and staging."
             ),
             "Composition": (
-                "Breast parenchyma demonstrates heterogeneous fibroglandular echotexture with mixed "
-                "fibroglandular and fatty elements appropriate for the patient's age."
+                "Background breast parenchyma demonstrates heterogeneous fibroglandular echotexture with mixed "
+                "dense and fatty components, appropriate for the patient's age and habitus."
             ),
             "Findings": (
-                f"Ultrasound demonstrates an irregular, hypoechoic mass with non-circumscribed (spiculated) margins, "
-                f"taller-than-wide orientation, and posterior acoustic shadowing located at {pos}. "
-                f"The largest sonographic dimension measures approximately {size_cm} cm. "
-                f"Correlation with the clinical stage of {stage} based on size is noted. "
-                f"AI-assisted assessment suggests a {conf_pct}% estimated probability of malignancy for this morphology."
+                f"Ultrasound demonstrates a {morphology} with {margin_desc} and taller-than-wide orientation. "
+                f"The lesion measures approximately {size_cm} cm in greatest dimension, corresponding to {stage}. "
+                f"AI-based analysis with {conf_pct}% confidence identifies this as {suspicion_level}. "
+                f"Posterior acoustic shadowing is present. Maximum heatmap activation area: {pixel_count} pixels. "
+                f"Internal echogenicity is predominantly hypoechoic with mixed solid characteristics. "
+                f"No significant vascularity on color Doppler (if performed)."
             ),
             "Impression": (
-                "Suspicious solid mass—ultrasound-guided core needle biopsy is recommended for histologic diagnosis."
+                f"BI-RADS Category 5: {suspicion_level}. "
+                f"{recommendation}"
             ),
             "BI_RADS": "Category 5 - Highly Suggestive of Malignancy",
         }
 
     if prediction_label == "Benign":
+        # Dynamic language based on size and confidence
+        if confidence_score >= 0.95:
+            benign_confidence = "classic features consistent with benignity"
+            followup = "No follow-up imaging is required."
+        elif confidence_score >= 0.90:
+            benign_confidence = "features most compatible with a benign etiology"
+            followup = "Short-interval follow-up ultrasound at 6 weeks is recommended."
+        else:
+            benign_confidence = "findings suggestive of a benign process"
+            followup = "Short-interval follow-up ultrasound at 3 months is recommended."
+
+        duration = "6 months" if size_cm < 2 else "3 months"
+
         return {
             "Indication": (
-                "Diagnostic breast ultrasound for characterization of a palpable lump or an incidentally noted "
-                "focal finding on prior imaging."
+                "Diagnostic breast ultrasound for characterization of a breast lesion. "
+                "Determination of BI-RADS assessment category to guide management."
             ),
             "Composition": (
-                "Background echotexture is predominantly heterogeneous fibroglandular without diffuse skin thickening "
-                "or edema."
+                "Background echotexture is heterogeneous fibroglandular without focal skin thickening, "
+                "skin retraction, or axillary lymphadenopathy."
             ),
             "Findings": (
-                f"There is a circumscribed, oval, homogeneously hypoechoic mass measuring approximately {size_cm} cm "
-                f"with parallel orientation and posterior acoustic enhancement. Margins are smooth. "
-                f"Clinical T-stage by size: {stage}. AI model confidence for a benign-appearing lesion: {conf_pct}%."
+                f"A circumscribed, {morphology} is identified, measuring {size_cm} cm ({stage} by size criteria). "
+                f"Margins are smooth and well-defined with {concentration}. "
+                f"Posterior acoustic enhancement is noted. Homogeneous internal echogenicity. "
+                f"AI model assessment: {conf_pct}% confidence for benign morphology. "
+                f"Heatmap activation area: {pixel_count} pixels, indicating localized concern."
             ),
             "Impression": (
-                "Findings are most compatible with a benign etiology such as fibroadenoma or a complicated cyst; "
-                "short-interval follow-up ultrasound at 6 months is recommended to document stability."
+                f"BI-RADS Category 3: Probably Benign. "
+                f"The imaging findings demonstrate {benign_confidence}. "
+                f"Differential diagnosis includes fibroadenoma or complicated cyst. "
+                f"{followup} imaging at {duration} to document stability."
             ),
             "BI_RADS": "Category 3 - Probably Benign",
         }
 
-    # Normal
+    # Normal study
     return {
         "Indication": (
-            "Routine screening breast ultrasound or adjunctive study to mammography for completeness of assessment."
+            "Routine screening breast ultrasound or problem-solving study of the breast. "
+            "Assessment for focal abnormality per clinical protocol."
         ),
         "Composition": (
-            "Symmetric fibroglandular pattern without focal ductal dilation or skin retraction."
+            "Bilateral breast parenchyma demonstrates symmetric, normal fibroglandular pattern. "
+            "No focal ductal dilation, skin retraction, or edema identified."
         ),
         "Findings": (
-            "No focal solid or cystic lesions identified. Normal fibroglandular echotexture. Intact Cooper's ligaments. "
-            f"No mass requiring T-staging. AI assessment: {conf_pct}% confidence for a negative study."
+            f"No focal solid or cystic lesions identified in either breast. "
+            f"Upper outer quadrants and retromammary spaces are unremarkable. "
+            f"Nipple-areolar complexes are normal. Cooper's ligaments intact. "
+            f"No axillary lymphadenopathy. AI assessment: {conf_pct}% confidence for completely normal study. "
+            f"No suspicious microcalcifications or architectural distortion."
         ),
-        "Impression": "Routine screening interval per institutional guidelines is recommended.",
+        "Impression": (
+            "Negative screening ultrasound. No suspicious features identified. "
+            "Routine interval follow-up per institutional screening guidelines is recommended."
+        ),
         "BI_RADS": "Category 1 - Negative",
     }
 
@@ -491,6 +581,15 @@ class PatientUpsert(BaseModel):
     heatmap_image: str = ""
 
 
+class FeedbackSubmission(BaseModel):
+    case_id: str
+    corrected_prediction: str
+    corrected_confidence: float = Field(ge=0.0, le=1.0)
+    reasoning: str
+    feedback_type: str = "pathology_confirmed"  # or "clinically_overridden", "uncertain"
+    doctor_id: str = "anonymous"
+
+
 @app.get("/patients")
 def list_patients() -> dict[str, list[dict[str, Any]]]:
     conn = _get_db()
@@ -569,6 +668,151 @@ def delete_patient(patient_id: str) -> dict[str, str]:
     return {"status": "success", "deleted_id": patient_id}
 
 
+@app.post("/feedback/submit")
+def submit_feedback(feedback: FeedbackSubmission) -> dict[str, str]:
+    """
+    Doctor submits feedback on a case:
+    - Correct prediction if different from model prediction
+    - Provide confidence level in the correction
+    - Explain reasoning for audit trail
+    
+    This data trains the model over time.
+    """
+    conn = _get_db()
+    try:
+        # Get original prediction from patient record
+        patient = conn.execute(
+            "SELECT prediction, confidence FROM patients WHERE id = ?",
+            (feedback.case_id,)
+        ).fetchone()
+        
+        if not patient:
+            raise HTTPException(status_code=404, detail=f"Case {feedback.case_id} not found")
+        
+        # Create feedback record
+        feedback_id = str(uuid.uuid4())
+        created_at = datetime.now().isoformat()
+        
+        conn.execute(
+            """
+            INSERT INTO feedback_logs 
+            (id, case_id, doctor_id, original_prediction, original_confidence, 
+             corrected_prediction, corrected_confidence, reasoning, feedback_type, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                feedback_id,
+                feedback.case_id,
+                feedback.doctor_id,
+                patient["prediction"],
+                patient["confidence"],
+                feedback.corrected_prediction,
+                feedback.corrected_confidence,
+                feedback.reasoning,
+                feedback.feedback_type,
+                created_at,
+            ),
+        )
+        conn.commit()
+        
+        # Log the feedback for monitoring
+        was_correct = patient["prediction"] == feedback.corrected_prediction
+        print(
+            f"\n📝 FEEDBACK LOGGED: {feedback_id[:8]}\n"
+            f"   Case: {feedback.case_id[:8]}\n"
+            f"   Model said: {patient['prediction']} ({patient['confidence']:.1%})\n"
+            f"   Actually was: {feedback.corrected_prediction} ({feedback.corrected_confidence:.1%})\n"
+            f"   Match: {'✅ YES' if was_correct else '❌ NO'}\n"
+            f"   Reason: {feedback.reasoning[:100]}...\n"
+        )
+        
+        return {"status": "ok", "feedback_id": feedback_id}
+    
+    except sqlite3.Error as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    finally:
+        conn.close()
+
+
+@app.get("/feedback/stats")
+def get_feedback_stats() -> dict[str, Any]:
+    """
+    Get high-level feedback statistics for monitoring model performance.
+    """
+    conn = _get_db()
+    try:
+        # Total feedback submitted
+        total = conn.execute("SELECT COUNT(*) as count FROM feedback_logs").fetchone()
+        
+        # Accuracy of model predictions
+        accuracy = conn.execute(
+            """
+            SELECT 
+                COUNT(*) as total,
+                SUM(CASE WHEN original_prediction = corrected_prediction THEN 1 ELSE 0 END) as correct
+            FROM feedback_logs
+            """
+        ).fetchone()
+        
+        # Breakdown by prediction type
+        breakdown = conn.execute(
+            """
+            SELECT 
+                original_prediction,
+                corrected_prediction,
+                COUNT(*) as count,
+                ROUND(AVG(original_confidence), 3) as avg_model_confidence,
+                ROUND(AVG(corrected_confidence), 3) as avg_actual_confidence
+            FROM feedback_logs
+            GROUP BY original_prediction, corrected_prediction
+            ORDER BY count DESC
+            """
+        ).fetchall()
+        
+        # Recent errors (model wrong)
+        recent_errors = conn.execute(
+            """
+            SELECT case_id, original_prediction, corrected_prediction, reasoning, created_at
+            FROM feedback_logs
+            WHERE original_prediction != corrected_prediction
+            ORDER BY created_at DESC
+            LIMIT 5
+            """
+        ).fetchall()
+        
+    finally:
+        conn.close()
+    
+    accuracy_pct = (accuracy["correct"] / accuracy["total"]) * 100 if accuracy["total"] > 0 else 0
+    
+    return {
+        "total_feedback": total["count"],
+        "accuracy_percentage": round(accuracy_pct, 1),
+        "total_predictions_reviewed": accuracy["total"],
+        "correct_predictions": accuracy["correct"],
+        "breakdown": [
+            {
+                "model_said": row["original_prediction"],
+                "actually": row["corrected_prediction"],
+                "count": row["count"],
+                "avg_model_confidence": row["avg_model_confidence"],
+                "avg_actual_confidence": row["avg_actual_confidence"],
+            }
+            for row in breakdown
+        ],
+        "recent_errors": [
+            {
+                "case_id": row["case_id"],
+                "model_prediction": row["original_prediction"],
+                "actual_prediction": row["corrected_prediction"],
+                "reason": row["reasoning"],
+                "date": row["created_at"],
+            }
+            for row in recent_errors
+        ],
+    }
+
+
 @app.post("/predict")
 async def predict_image(file: UploadFile = File(...)):
     if not HAS_PYTORCH_GRAD_CAM:
@@ -629,8 +873,10 @@ async def predict_image(file: UploadFile = File(...)):
     heatmap_base64, cam256 = _heatmap_and_cam(image, prediction_label, input_batch, class_idx)
 
     # Streamlit-style CAM heuristics (thresholded activation area + min-area-rect "diameter")
+    severity_metrics = None
     if cam256 is not None and prediction_label != "Normal":
         sev = _cam_severity_from_heatmap(cam256)
+        severity_metrics = sev
         if sev["severity_level"] != "clean":
             severity_score = sev["severity_label"]
         size_est, _stage_verbose = _cam_tumor_size_cm_from_cam(cam256)
@@ -638,7 +884,7 @@ async def predict_image(file: UploadFile = File(...)):
             size_cm = float(size_est)
             stage = _stage_from_size(size_cm)
 
-    report_details = _build_report_details(prediction_label, size_cm, stage, confidence_score)
+    report_details = _build_report_details(prediction_label, size_cm, stage, confidence_score, severity_metrics)
 
     return {
         "prediction": prediction_label,

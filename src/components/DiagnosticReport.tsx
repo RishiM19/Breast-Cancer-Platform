@@ -1,6 +1,8 @@
-import { ArrowLeft, FileText, Calendar, User, Activity, Printer } from 'lucide-react';
+import { useState } from 'react';
+import { ArrowLeft, FileText, Calendar, User, Activity, Printer, MessageSquare } from 'lucide-react';
 import { motion } from 'motion/react';
 import type { PatientRecord } from '../types/patient';
+import { FeedbackModal } from './FeedbackModal';
 
 interface DiagnosticReportProps {
   patient: PatientRecord;
@@ -69,6 +71,7 @@ function biRadsAccent(biRads: string): {
 }
 
 export function DiagnosticReport({ patient, onBack }: DiagnosticReportProps) {
+  const [showFeedbackModal, setShowFeedbackModal] = useState(false);
   const { analysis: a } = patient;
   const rd = a.reportDetails;
   const bi = biRadsAccent(rd.BI_RADS);
@@ -156,14 +159,25 @@ export function DiagnosticReport({ patient, onBack }: DiagnosticReportProps) {
                 <h1 className="text-gray-900 dark:text-white print:text-gray-900 mb-1 text-2xl font-semibold tracking-tight">AI Diagnostic Report</h1>
                 <p className="text-gray-500 dark:text-gray-400 print:text-gray-600 text-sm">Structured ultrasound assessment • Patient ID: {patient.id}</p>
               </div>
-              <button
-                type="button"
-                onClick={handlePrint}
-                className="flex items-center gap-2 px-5 py-3 bg-[#007AFF] text-white rounded-lg hover:bg-[#0062CC] transition-colors shadow-md print:hidden"
-              >
-                <Printer className="w-5 h-5" />
-                <span>Export / Print</span>
-              </button>
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => setShowFeedbackModal(true)}
+                  className="flex items-center gap-2 px-5 py-3 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors shadow-md print:hidden"
+                  title="Submit feedback or correction for this case"
+                >
+                  <MessageSquare className="w-5 h-5" />
+                  <span>Submit Feedback</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handlePrint}
+                  className="flex items-center gap-2 px-5 py-3 bg-[#007AFF] text-white rounded-lg hover:bg-[#0062CC] transition-colors shadow-md print:hidden"
+                >
+                  <Printer className="w-5 h-5" />
+                  <span>Export / Print</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -386,6 +400,19 @@ export function DiagnosticReport({ patient, onBack }: DiagnosticReportProps) {
           </div>
         </div>
       </div>
+
+      {showFeedbackModal && (
+        <FeedbackModal
+          caseId={patient.id}
+          originalPrediction={a.prediction}
+          originalConfidence={a.confidence}
+          onClose={() => setShowFeedbackModal(false)}
+          onSuccess={() => {
+            // Optional: Refresh case data or show success message
+            setShowFeedbackModal(false);
+          }}
+        />
+      )}
     </div>
   );
 }
