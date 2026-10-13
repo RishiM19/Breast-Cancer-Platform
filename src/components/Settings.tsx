@@ -129,15 +129,15 @@ export function Settings({ onNavigate, userName, onUpdateUserName }: SettingsPro
               </div>
             </div>
 
-            {/* AI Model Settings */}
+            {/* Clinical Intelligence Settings */}
             <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 p-6">
               <div className="flex items-center gap-3 mb-6">
                 <div className="w-10 h-10 bg-green-100 dark:bg-green-900/40 rounded-lg flex items-center justify-center">
                   <BarChart3 className="w-5 h-5 text-green-600 dark:text-green-400" />
                 </div>
                 <div>
-                  <h3 className="text-gray-900 dark:text-white">AI Model Settings</h3>
-                  <p className="text-sm text-gray-500 dark:text-gray-400">Configure AI analysis preferences</p>
+                  <h3 className="text-gray-900 dark:text-white">Clinical Intelligence Settings</h3>
+                  <p className="text-sm text-gray-500 dark:text-gray-400">Configure model analysis preferences</p>
                 </div>
               </div>
 

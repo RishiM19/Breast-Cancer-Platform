@@ -156,7 +156,7 @@ export function DiagnosticReport({ patient, onBack }: DiagnosticReportProps) {
 
             <div className="flex items-center justify-between">
               <div>
-                <h1 className="text-gray-900 dark:text-white print:text-gray-900 mb-1 text-2xl font-semibold tracking-tight">AI Diagnostic Report</h1>
+                <h1 className="text-gray-900 dark:text-white print:text-gray-900 mb-1 text-2xl font-semibold tracking-tight">Clinical Intelligence Report</h1>
                 <p className="text-gray-500 dark:text-gray-400 print:text-gray-600 text-sm">Structured ultrasound assessment • Patient ID: {patient.id}</p>
               </div>
               <div className="flex gap-3">
@@ -241,7 +241,7 @@ export function DiagnosticReport({ patient, onBack }: DiagnosticReportProps) {
                     <div className="aspect-square bg-gray-100 dark:bg-gray-700/50 rounded-lg overflow-hidden border border-gray-200/80 dark:border-gray-600 print:border-gray-300 print:bg-gray-100">
                       <img
                         src={patient.heatmapImage}
-                        alt="AI heatmap"
+                        alt="Model heatmap"
                         className="w-full h-full object-contain print:object-contain"
                       />
                     </div>
@@ -261,7 +261,7 @@ export function DiagnosticReport({ patient, onBack }: DiagnosticReportProps) {
                   <div className="w-10 h-10 bg-purple-100 dark:bg-purple-900/40 rounded-lg flex items-center justify-center">
                     <Activity className="w-5 h-5 text-purple-600 dark:text-purple-300" />
                   </div>
-                  <h2 className="text-gray-900 dark:text-white print:text-gray-900 font-semibold">AI Analysis Results</h2>
+                  <h2 className="text-gray-900 dark:text-white print:text-gray-900 font-semibold">Model Analysis Results</h2>
                 </div>
 
                 <div className={`rounded-xl border-2 p-6 mb-6 ${getColorClasses(a.predictionColor)}`}>
@@ -303,7 +303,7 @@ export function DiagnosticReport({ patient, onBack }: DiagnosticReportProps) {
                 <div className="px-6 pt-6 pb-2 border-b border-gray-100 dark:border-gray-700 print:border-gray-200">
                   <h3 className="text-gray-900 dark:text-white print:text-gray-900 text-lg font-semibold tracking-tight">Clinical ultrasound report</h3>
                   <p className="text-gray-500 dark:text-gray-400 print:text-gray-600 text-sm mt-1 leading-relaxed">
-                    Standardized sections derived from the structured AI report. Lesion metrics above supplement the narrative
+                    Standardized sections derived from the structured model report. Lesion metrics above supplement the narrative
                     below.
                   </p>
                 </div>
@@ -368,7 +368,7 @@ export function DiagnosticReport({ patient, onBack }: DiagnosticReportProps) {
                   )}
                   <div className="bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800 rounded-lg p-4 mt-4 print:bg-blue-50">
                     <p className="text-blue-900 dark:text-blue-200 print:text-blue-900 text-sm">
-                      <span className="font-semibold">Note:</span> This is an AI-assisted diagnosis and should not replace
+                      <span className="font-semibold">Note:</span> This is a computer-assisted analysis and should not replace
                       professional medical judgment. Consult the care team for final diagnosis and treatment decisions.
                     </p>
                   </div>

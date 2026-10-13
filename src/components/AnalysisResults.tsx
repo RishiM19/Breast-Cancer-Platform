@@ -1,25 +1,21 @@
 import { useState } from 'react';
 import { CheckCircle, AlertTriangle } from 'lucide-react';
 import { motion } from 'motion/react';
-import type { AnalysisData } from '../types/patient';
+import type { AnalysisData, ModelPrediction } from '../types/patient';
 
 interface AnalysisResultsProps {
   analysisData: AnalysisData;
   onVerifyAndAccept: () => void;
   onCorrection: () => void;
-  aiAccuracy: number;
 }
 
-export function AnalysisResults({ analysisData, onVerifyAndAccept, onCorrection, aiAccuracy }: AnalysisResultsProps) {
+export function AnalysisResults({ analysisData, onVerifyAndAccept, onCorrection }: AnalysisResultsProps) {
   const [showHeatmap, setShowHeatmap] = useState(false);
   const hasHeatmap = analysisData.prediction !== 'Normal' && !!analysisData.heatmapImage;
 
-  const metrics = [
-    { label: 'Tumor Grade', value: analysisData.tumorGrade },
-    { label: 'Node Status', value: analysisData.nodeStatus },
-    { label: 'Lesion Size', value: analysisData.lesionSize },
-    { label: 'Est. T-Stage', value: analysisData.subtype },
-  ];
+  const modelEntries = analysisData.multiModel
+    ? Object.entries(analysisData.multiModel.models) as [string, ModelPrediction][]
+    : [];
 
   const getResultColor = () => {
     switch (analysisData.predictionColor) {
@@ -90,7 +86,7 @@ export function AnalysisResults({ analysisData, onVerifyAndAccept, onCorrection,
                 {hasHeatmap ? (
                   <img
                     src={analysisData.heatmapImage}
-                    alt="AI attention heatmap"
+                    alt="Model attention heatmap"
                     className={`absolute inset-0 w-full h-full object-contain transition-opacity duration-500 ease-in-out pointer-events-none ${
                       showHeatmap ? 'opacity-100' : 'opacity-0'
                     }`}
@@ -111,7 +107,7 @@ export function AnalysisResults({ analysisData, onVerifyAndAccept, onCorrection,
                     type="button"
                     role="switch"
                     aria-checked={showHeatmap}
-                    aria-label={showHeatmap ? 'Switch to original scan' : 'Switch to AI heatmap'}
+                    aria-label={showHeatmap ? 'Switch to original scan' : 'Switch to model heatmap'}
                     onClick={() => setShowHeatmap((v) => !v)}
                     className={`relative h-8 w-[52px] shrink-0 rounded-full transition-colors duration-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#007AFF] focus-visible:ring-offset-2 ${
                       showHeatmap ? 'bg-[#007AFF]' : 'bg-gray-300 dark:bg-gray-600'
@@ -128,7 +124,7 @@ export function AnalysisResults({ analysisData, onVerifyAndAccept, onCorrection,
                       showHeatmap ? 'text-[#007AFF] font-bold' : 'text-gray-400 dark:text-gray-300 font-normal'
                     }`}
                   >
-                    AI Heatmap
+                    Model Heatmap
                   </span>
                 </div>
               ) : null}
@@ -145,10 +141,9 @@ export function AnalysisResults({ analysisData, onVerifyAndAccept, onCorrection,
           className="space-y-6"
         >
           <div>
-            <h2 className="text-gray-900 dark:text-white mb-1">AI Diagnostic Report</h2>
+            <h2 className="text-gray-900 dark:text-white mb-1">Clinical Intelligence Report</h2>
             <p className="text-gray-500 dark:text-gray-400 text-sm">
-              Generated: {new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })} | Model
-              Accuracy: {aiAccuracy.toFixed(1)}%
+              Generated: {new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })} | Three independent classifiers
             </p>
           </div>
 
@@ -177,56 +172,53 @@ export function AnalysisResults({ analysisData, onVerifyAndAccept, onCorrection,
             </div>
           </div>
 
-          {(analysisData.reportDetails.Indication ||
-            analysisData.reportDetails.Composition ||
-            analysisData.reportDetails.Findings ||
-            analysisData.reportDetails.Impression ||
-            analysisData.reportDetails.BI_RADS) && (
-            <div className="rounded-xl p-5 border border-gray-200 dark:border-gray-700 bg-white/85 dark:bg-gray-800/90 backdrop-blur-sm space-y-3">
-              <p className="text-gray-500 dark:text-gray-400 text-sm font-medium">Structured clinical summary</p>
-              {analysisData.reportDetails.Indication ? (
-                <div>
-                  <p className="text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wide mb-1">Indication</p>
-                  <p className="text-gray-800 dark:text-gray-200 text-sm leading-relaxed">{analysisData.reportDetails.Indication}</p>
-                </div>
-              ) : null}
-              {analysisData.reportDetails.Composition ? (
-                <div>
-                  <p className="text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wide mb-1">Composition</p>
-                  <p className="text-gray-800 dark:text-gray-200 text-sm leading-relaxed">{analysisData.reportDetails.Composition}</p>
-                </div>
-              ) : null}
-              {analysisData.reportDetails.Findings ? (
-                <div>
-                  <p className="text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wide mb-1">Findings</p>
-                  <p className="text-gray-800 dark:text-gray-200 text-sm leading-relaxed">{analysisData.reportDetails.Findings}</p>
-                </div>
-              ) : null}
-              {analysisData.reportDetails.Impression ? (
-                <div className="pt-1 border-t border-gray-200/80 dark:border-gray-600">
-                  <p className="text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wide mb-1">Impression</p>
-                  <p className="text-gray-900 dark:text-white text-sm font-semibold leading-snug">{analysisData.reportDetails.Impression}</p>
-                </div>
-              ) : null}
-              {analysisData.reportDetails.BI_RADS ? (
-                <p className="text-xs text-gray-600 dark:text-gray-300 pt-1">
-                  <span className="font-semibold text-gray-700 dark:text-gray-200">BI-RADS:</span> {analysisData.reportDetails.BI_RADS}
-                </p>
-              ) : null}
+          {modelEntries.length > 0 && (
+            <div>
+              <h2 className="text-gray-900 dark:text-white mb-3">Model Results</h2>
+              <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+                {modelEntries.map(([name, result]) => (
+                  <div key={name} className="bg-white dark:bg-gray-800/90 rounded-xl p-5 border border-gray-200 dark:border-gray-700">
+                    <div className="flex items-start justify-between gap-3 mb-4">
+                      <div>
+                        <h3 className="text-gray-900 dark:text-white font-semibold">{name}</h3>
+                        <p className="text-xs text-gray-500 dark:text-gray-400">EfficientNet-B0 • {result.task.replace(' classification', '')}</p>
+                      </div>
+                      <span className="text-sm font-semibold text-[#007AFF]">{Math.round(result.confidence * 100)}%</span>
+                    </div>
+                    <p className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-1">Prediction</p>
+                    <p className="text-lg font-semibold text-gray-900 dark:text-white mb-4">{result.prediction}</p>
+                    <div className="space-y-2">
+                      {Object.entries(result.probabilities).map(([label, probability]) => (
+                        probability == null ? null : (
+                          <div key={label}>
+                            <div className="flex justify-between text-xs text-gray-600 dark:text-gray-300 mb-1">
+                              <span>{label}</span><span>{Math.round(probability * 100)}%</span>
+                            </div>
+                            <div className="h-2 rounded-full bg-gray-100 dark:bg-gray-700 overflow-hidden">
+                              <div className="h-full bg-[#007AFF] rounded-full" style={{ width: `${probability * 100}%` }} />
+                            </div>
+                          </div>
+                        )
+                      ))}
+                    </div>
+                    {result.note && <p className="text-xs text-gray-500 dark:text-gray-400 mt-4">{result.note}</p>}
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 
-          <div className="grid grid-cols-2 gap-4">
-            {metrics.map((metric, index) => (
-              <div
-                key={index}
-                className="bg-white dark:bg-gray-800/90 rounded-xl p-5 border border-gray-200 dark:border-gray-700 backdrop-blur-sm"
-              >
-                <p className="text-gray-500 dark:text-gray-400 text-sm mb-2">{metric.label}</p>
-                <p className="text-gray-900 dark:text-white">{metric.value}</p>
-              </div>
-            ))}
-          </div>
+          {analysisData.multiModel && (
+            <div className="rounded-xl p-6 border-2 border-[#007AFF]/30 bg-blue-50/70 dark:bg-blue-950/30">
+              <p className="text-xs uppercase tracking-wide text-[#007AFF] font-semibold mb-2">Model Consensus</p>
+              <p className="text-2xl font-semibold text-gray-900 dark:text-white">{analysisData.multiModel.consensus.prediction}</p>
+              <p className="text-gray-700 dark:text-gray-200 mt-1">
+                {analysisData.multiModel.consensus.agreement_count} / {analysisData.multiModel.consensus.participating_models ?? analysisData.multiModel.consensus.model_count} models agree
+              </p>
+              <p className="text-sm text-gray-600 dark:text-gray-300 mt-2">{analysisData.multiModel.consensus.status}</p>
+              {analysisData.multiModel.consensus.note && <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">{analysisData.multiModel.consensus.note}</p>}
+            </div>
+          )}
 
           <div className="space-y-3 pt-4">
             <button

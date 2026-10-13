@@ -52,7 +52,7 @@ export function Layout({
             </div>
             <div>
               <h2 className="text-gray-900 dark:text-white">Lumina</h2>
-              <p className="text-xs text-gray-500 dark:text-gray-400">Breast AI</p>
+              <p className="text-xs text-gray-500 dark:text-gray-400">Clinical Intelligence</p>
             </div>
           </div>
         </div>

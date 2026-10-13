@@ -1,6 +1,7 @@
-import { BarChart3, Upload, TrendingUp, Bell } from 'lucide-react';
+import { BarChart3, Upload, Bell } from 'lucide-react';
 import { motion } from 'motion/react';
 import { useRef, useState } from 'react';
+import type { PatientRecord } from '../types/patient';
 
 interface CaseRecord {
   id: string;
@@ -16,8 +17,7 @@ interface CaseRecord {
 interface DashboardProps {
   onUpload: (file: File, patientName: string, patientAge: string) => void;
   recentCases: CaseRecord[];
-  totalScans: number;
-  aiAccuracy: number;
+  patientDatabase: PatientRecord[];
   userName: string;
   isAnalyzing?: boolean;
 }
@@ -25,8 +25,7 @@ interface DashboardProps {
 export function Dashboard({
   onUpload,
   recentCases,
-  totalScans,
-  aiAccuracy,
+  patientDatabase,
   userName,
   isAnalyzing = false,
 }: DashboardProps) {
@@ -35,11 +34,17 @@ export function Dashboard({
   const [patientAge, setPatientAge] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const notifications = [
-    { id: 1, text: 'New scan uploaded for PT-4921', time: '2 min ago', unread: true },
-    { id: 2, text: 'Analysis completed for PT-4920', time: '15 min ago', unread: true },
-    { id: 3, text: 'Model accuracy updated to 96.5%', time: '1 hour ago', unread: false },
-  ];
+  const today = new Date();
+  const scansToday = patientDatabase.filter((patient) => {
+    const date = new Date(patient.time);
+    return date.toDateString() === today.toDateString();
+  }).length;
+  const notifications = patientDatabase.slice(0, 3).map((patient, index) => ({
+    id: patient.id,
+    text: `Analysis completed for ${patient.id}`,
+    time: new Date(patient.date).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+    unread: index < 2,
+  }));
 
   const unreadCount = notifications.filter((n) => n.unread).length;
 
@@ -50,16 +55,15 @@ export function Dashboard({
   const stats = [
     {
       label: 'Total Scans Today',
-      value: totalScans.toString(),
+      value: scansToday.toString(),
       icon: BarChart3,
       color: 'text-blue-600 dark:text-blue-400',
     },
     {
-      label: 'AI Accuracy',
-      value: `${aiAccuracy.toFixed(1)}%`,
-      icon: TrendingUp,
+      label: 'Models Active',
+      value: '3',
+      icon: BarChart3,
       color: 'text-green-600 dark:text-green-400',
-      trend: 'up',
     },
   ];
 
@@ -199,12 +203,6 @@ export function Dashboard({
               <div className={`p-2 rounded-lg bg-gray-100/90 dark:bg-gray-700/80 ${stat.color}`}>
                 <stat.icon className="w-5 h-5" />
               </div>
-              {stat.trend && (
-                <span className="text-green-600 dark:text-green-400 text-xs flex items-center gap-1">
-                  <TrendingUp className="w-3 h-3" />
-                  +2.4%
-                </span>
-              )}
             </div>
             <h3 className="text-gray-900 dark:text-white mb-1">{stat.value}</h3>
             <p className="text-gray-500 dark:text-gray-400 text-sm">{stat.label}</p>
@@ -303,7 +301,7 @@ export function Dashboard({
                   <th className="px-6 py-3 text-left text-xs text-gray-600 dark:text-gray-300 w-20">Thumb</th>
                   <th className="px-6 py-3 text-left text-xs text-gray-600 dark:text-gray-300">Patient ID</th>
                   <th className="px-6 py-3 text-left text-xs text-gray-600 dark:text-gray-300">Scan Date</th>
-                  <th className="px-6 py-3 text-left text-xs text-gray-600 dark:text-gray-300">AI Prediction</th>
+                  <th className="px-6 py-3 text-left text-xs text-gray-600 dark:text-gray-300">Model Prediction</th>
                   <th className="px-6 py-3 text-left text-xs text-gray-600 dark:text-gray-300">Confidence</th>
                   <th className="px-6 py-3 text-left text-xs text-gray-600 dark:text-gray-300">Status</th>
                 </tr>

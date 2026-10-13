@@ -9,7 +9,7 @@ import { PatientList } from './components/PatientList';
 import { Settings } from './components/Settings';
 import { ModelStats } from './components/ModelStats';
 import { DiagnosticReport } from './components/DiagnosticReport';
-import type { AnalysisData, PatientRecord, PatientAnalysis } from './types/patient';
+import type { AnalysisData, MultiModelAnalysis, PatientRecord, PatientAnalysis } from './types/patient';
 import { parseReportDetails } from './types/patient';
 
 function readInitialThemeIsDark(): boolean {
@@ -69,6 +69,7 @@ interface ApiPatientRow {
   report_details: unknown;
   original_image: string;
   heatmap_image: string;
+  multi_model_result?: MultiModelAnalysis;
 }
 
 function mapApiPatientToPatientRecord(row: ApiPatientRow): PatientRecord {
@@ -98,6 +99,7 @@ function mapApiPatientToPatientRecord(row: ApiPatientRow): PatientRecord {
       subtype: stageStr,
       notes: '',
       reportDetails: parseReportDetails(row.report_details),
+      multiModel: row.multi_model_result,
     },
   };
 }
@@ -118,6 +120,7 @@ async function persistPatientToApi(record: PatientRecord, confidenceNum: number,
       report_details: record.analysis.reportDetails,
       original_image: record.originalImage,
       heatmap_image: record.heatmapImage || '',
+      multi_model_result: record.analysis.multiModel || {},
     }),
   });
 }
@@ -166,8 +169,12 @@ export function predictionToColor(prediction: string): 'red' | 'green' | 'blue' 
 }
 
 function mapPredictResponseToAnalysis(data: Record<string, unknown>): AnalysisData {
-  const prediction = String(data.prediction ?? 'Normal');
-  const confRaw = data.confidence;
+  const multiModel = data.models && data.consensus
+    ? ({ consensus: data.consensus, models: data.models } as MultiModelAnalysis)
+    : undefined;
+  const consensusPrediction = multiModel?.consensus.prediction;
+  const prediction = String(consensusPrediction ?? data.prediction ?? 'Normal');
+  const confRaw = multiModel?.models.BUSI.confidence ?? data.confidence;
   const confNum =
     typeof confRaw === 'number'
       ? confRaw
@@ -180,30 +187,18 @@ function mapPredictResponseToAnalysis(data: Record<string, unknown>): AnalysisDa
       : Math.round(confNum)
     : 0;
 
-  const severity = data.severity_score;
-  const tumorGrade = severity != null ? String(severity) : 'N/A';
-
-  const sizeRaw = data.size_cm;
-  const lesionSize =
-    typeof sizeRaw === 'number'
-      ? `${sizeRaw} cm`
-      : sizeRaw != null
-        ? `${sizeRaw} cm`
-        : 'N/A';
-
-  const stage = data.stage != null ? String(data.stage) : 'Unknown';
-
   return {
     prediction,
     predictionColor: predictionToColor(prediction),
     confidence: `${confidencePct}%`,
-    tumorGrade,
+    tumorGrade: 'N/A',
     nodeStatus: 'Unknown',
-    lesionSize,
-    subtype: stage,
+    lesionSize: 'N/A',
+    subtype: 'N/A',
     originalImage: '',
     heatmapImage: normalizeHeatmapDataUrl(data.heatmap_base64),
     reportDetails: parseReportDetails(data.report_details),
+    multiModel,
   };
 }
 
@@ -237,7 +232,7 @@ function patientToCaseRow(p: PatientRecord): CaseRecord {
     prediction: p.analysis.prediction,
     predictionColor: p.analysis.predictionColor,
     confidence: p.analysis.confidence,
-    status: humanVerified ? 'Human Verified' : 'AI Complete',
+    status: humanVerified ? 'Human Verified' : 'Model Complete',
     statusColor: humanVerified ? 'blue' : 'grey',
     originalImage: p.originalImage,
   };
@@ -269,16 +264,6 @@ export default function App() {
   const [currentAnalysis, setCurrentAnalysis] = useState<AnalysisData | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
 
-  const [totalScans, setTotalScans] = useState(() => {
-    const saved = sessionStorage.getItem('totalScans');
-    return saved ? parseInt(saved, 10) : 48;
-  });
-
-  const [aiAccuracy, setAiAccuracy] = useState(() => {
-    const saved = sessionStorage.getItem('aiAccuracy');
-    return saved ? parseFloat(saved) : 96.5;
-  });
-
   const [userName, setUserName] = useState(() => {
     const saved = sessionStorage.getItem('userName');
     return saved || 'Dr. Elena Rossi';
@@ -303,14 +288,6 @@ export default function App() {
   useEffect(() => {
     sessionStorage.setItem('currentScreen', currentScreen);
   }, [currentScreen]);
-
-  useEffect(() => {
-    sessionStorage.setItem('totalScans', totalScans.toString());
-  }, [totalScans]);
-
-  useEffect(() => {
-    sessionStorage.setItem('aiAccuracy', aiAccuracy.toString());
-  }, [aiAccuracy]);
 
   useEffect(() => {
     sessionStorage.setItem('userName', userName);
@@ -412,15 +389,9 @@ export default function App() {
         analysis: patientAnalysis,
       };
 
-      const confNum =
-        typeof data.confidence === 'number'
-          ? data.confidence
-          : parseFloat(String(data.confidence ?? 0));
-      const sizeCm =
-        typeof data.size_cm === 'number' ? data.size_cm : parseFloat(String(data.size_cm ?? 0));
-      const stageStr = String(data.stage ?? '');
+      const confNum = analysisData.multiModel?.models.BUSI.confidence ?? 0;
 
-      await persistPatientToApi(record, confNum, sizeCm, stageStr);
+      await persistPatientToApi(record, confNum, 0, 'N/A');
 
       setPatientDatabase((prev) => {
         const filtered = prev.filter((p) => p.id !== id);
@@ -428,7 +399,6 @@ export default function App() {
       });
       setActivePatientId(id);
       setCurrentAnalysis(analysisData);
-      setAiAccuracy((prev) => Math.min(100, prev + 0.1));
       setCurrentScreen('analysis');
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Analysis request failed.';
@@ -455,7 +425,6 @@ export default function App() {
       )
     );
 
-    setTotalScans((prev) => prev + 1);
     setCurrentScreen('dashboard');
   };
 
@@ -636,7 +605,7 @@ export default function App() {
             <div className="w-16 h-16 bg-[#007AFF] rounded-full flex items-center justify-center mb-3">
               <Activity className="w-8 h-8 text-white" strokeWidth={2} />
             </div>
-            <h1 className="text-gray-900 dark:text-white">Lumina Breast AI</h1>
+            <h1 className="text-gray-900 dark:text-white">Lumina Clinical Intelligence</h1>
             <p className="text-gray-500 dark:text-gray-400 text-sm mt-2 text-center">Illuminating the path to precise diagnosis.</p>
           </div>
 
@@ -698,8 +667,7 @@ export default function App() {
         <Dashboard
           onUpload={handleUpload}
           recentCases={recentCases}
-          totalScans={totalScans}
-          aiAccuracy={aiAccuracy}
+          patientDatabase={patientDatabase}
           userName={userName}
           isAnalyzing={isAnalyzing}
         />
@@ -711,7 +679,7 @@ export default function App() {
           onDeletePatient={handleDeletePatient}
         />
       )}
-      {currentScreen === 'model-stats' && <ModelStats aiAccuracy={aiAccuracy} />}
+      {currentScreen === 'model-stats' && <ModelStats patientDatabase={patientDatabase} />}
       {currentScreen === 'settings' && (
         <Settings onNavigate={handleNavigate} userName={userName} onUpdateUserName={handleUpdateUserName} />
       )}
@@ -720,7 +688,6 @@ export default function App() {
           analysisData={currentAnalysis}
           onVerifyAndAccept={handleVerifyAndAccept}
           onCorrection={handleCorrection}
-          aiAccuracy={aiAccuracy}
         />
       )}
       {currentScreen === 'correction' && (

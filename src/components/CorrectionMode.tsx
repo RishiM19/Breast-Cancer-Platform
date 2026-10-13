@@ -234,7 +234,7 @@ export function CorrectionMode({ currentPrediction, originalImage, onSubmit, onC
             {/* Header */}
             <div>
               <h2 className="text-gray-900 dark:text-white mb-1">Manual Refinement</h2>
-              <p className="text-gray-500 dark:text-gray-400 text-sm">Correct AI predictions with precision</p>
+              <p className="text-gray-500 dark:text-gray-400 text-sm">Correct model predictions with precision</p>
             </div>
 
             {/* Alert Card */}
@@ -243,7 +243,7 @@ export function CorrectionMode({ currentPrediction, originalImage, onSubmit, onC
                 <div className="w-5 h-5 text-yellow-600 mt-0.5">⚠️</div>
                 <div>
                   <p className="text-yellow-800 dark:text-yellow-200 text-sm">
-                    AI heatmap rejected. Please define exact tumor boundaries.
+                    Model heatmap rejected. Please define exact tumor boundaries.
                   </p>
                 </div>
               </div>
@@ -292,7 +292,7 @@ export function CorrectionMode({ currentPrediction, originalImage, onSubmit, onC
                   </option>
                 ))}
               </select>
-              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Current AI prediction: {currentPrediction}</p>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Current model prediction: {currentPrediction}</p>
             </div>
 
             <div>

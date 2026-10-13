@@ -134,7 +134,7 @@ export function FeedbackModal({
           {/* Original Analysis */}
           <div className="bg-gray-50 dark:bg-gray-900/50 rounded-lg p-4 border border-gray-200 dark:border-gray-700">
             <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">
-              Original AI Analysis
+              Original Model Analysis
             </h3>
             <div className="grid grid-cols-2 gap-4">
               <div>
@@ -252,7 +252,7 @@ export function FeedbackModal({
             <textarea
               value={reasoning}
               onChange={(e) => setReasoning(e.target.value)}
-              placeholder="Explain why you agree or disagree with the AI prediction. Include relevant clinical findings, pathology results, or patient history..."
+              placeholder="Explain why you agree or disagree with the model prediction. Include relevant clinical findings, pathology results, or patient history..."
               rows={4}
               className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 focus:ring-2 focus:ring-blue-500 outline-none resize-none"
             />

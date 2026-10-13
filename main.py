@@ -35,7 +35,9 @@ except ImportError:
 app = FastAPI()
 
 ROOT_DIR = Path(__file__).resolve().parent
-MODEL_PATH = ROOT_DIR / "models" / "best_model.pth"
+BUSI_MODEL_PATH = ROOT_DIR / "models" / "best_model.pth"
+UCLM_MODEL_PATH = ROOT_DIR / "models" / "uclm_v2_best_model.pth"
+BRA_MODEL_PATH = ROOT_DIR / "models" / "bra_best_model.pth"
 DB_PATH = ROOT_DIR / "lumina_database.db"
 
 app.add_middleware(
@@ -51,8 +53,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-CLASSES = ["Benign", "Malignant", "Normal"]
-NUM_CLASSES = len(CLASSES)
+BUSI_CLASSES = ["Benign", "Malignant", "Normal"]
+UCLM_CLASSES = ["Normal", "Benign", "Malignant"]
+BRA_CLASSES = ["Benign", "Malignant"]
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -100,6 +103,9 @@ def init_db() -> None:
             )
             """
         )
+        existing_columns = {row[1] for row in conn.execute("PRAGMA table_info(patients)").fetchall()}
+        if "multi_model_json" not in existing_columns:
+            conn.execute("ALTER TABLE patients ADD COLUMN multi_model_json TEXT NOT NULL DEFAULT '{}'" )
         conn.commit()
     finally:
         conn.close()
@@ -108,45 +114,31 @@ def init_db() -> None:
 init_db()
 
 
-def _build_model() -> nn.Module:
-    try:
-        model = efficientnet_b0(weights=EfficientNet_B0_Weights.IMAGENET1K_V1)
-    except Exception:
-        model = efficientnet_b0(weights=None)
+def _build_model(checkpoint_path: Path, class_names: list[str]) -> nn.Module:
+    if not checkpoint_path.is_file():
+        raise RuntimeError(f"Required model checkpoint not found: {checkpoint_path}")
+
+    model = efficientnet_b0(weights=None)
     in_features = model.classifier[1].in_features
-    model.classifier[1] = nn.Linear(in_features, NUM_CLASSES)
-    return model
-
-
-def _load_weights(model: nn.Module) -> None:
-    if not MODEL_PATH.is_file():
-        raise FileNotFoundError(f"Model file not found: {MODEL_PATH}")
-
-    checkpoint = torch.load(str(MODEL_PATH), map_location=device)
+    model.classifier[1] = nn.Linear(in_features, len(class_names))
+    checkpoint = torch.load(str(checkpoint_path), map_location=device, weights_only=True)
     state = checkpoint
     if isinstance(checkpoint, dict):
         for key in ("model_state_dict", "state_dict", "model"):
-            if key in checkpoint:
+            if key in checkpoint and isinstance(checkpoint[key], dict):
                 state = checkpoint[key]
                 break
     if not isinstance(state, dict):
-        state = checkpoint
-    model.load_state_dict(state, strict=False)
+        raise RuntimeError(f"Invalid state dict in checkpoint: {checkpoint_path}")
+    model.load_state_dict(state, strict=True)
+    model.to(device)
+    model.eval()
+    return model
 
 
-model = _build_model()
-try:
-    _load_weights(model)
-except FileNotFoundError:
-    print(
-        f"WARNING: {MODEL_PATH} not found; using ImageNet-pretrained backbone "
-        "with a randomly initialized 3-class head. Place best_model.pth under models/ for fine-tuned weights."
-    )
-except Exception as e:
-    print(f"WARNING: Could not load checkpoint from {MODEL_PATH}: {e}. Using partially initialized weights.")
-
-model.to(device)
-model.eval()
+busi_model = _build_model(BUSI_MODEL_PATH, BUSI_CLASSES)
+uclm_model = _build_model(UCLM_MODEL_PATH, UCLM_CLASSES)
+bra_model = _build_model(BRA_MODEL_PATH, BRA_CLASSES)
 
 transform = transforms.Compose(
     [
@@ -447,15 +439,15 @@ def _grad_cam_via_pytorch_grad_cam_lib(
         img_float = np.float32(img) / 255.0
 
         batch = input_batch.clone().detach().to(device)
-        target_layers = [model.features[-1]]
+        target_layers = [busi_model.features[-1]]
         try:
             cam = GradCAM(  # type: ignore[misc]
-                model=model,
+            model=busi_model,
                 target_layers=target_layers,
                 use_cuda=(device.type == "cuda"),
             )
         except TypeError:
-            cam = GradCAM(model=model, target_layers=target_layers)  # type: ignore[misc]
+            cam = GradCAM(model=busi_model, target_layers=target_layers)  # type: ignore[misc]
 
         with cam:
             grayscale_cam = cam(
@@ -491,7 +483,7 @@ def _grad_cam_efficientnet_b0(
     """
     rgb = np.array(pil_image.convert("RGB"))
     h, w = rgb.shape[:2]
-    target_layer = model.features[-1]
+    target_layer = busi_model.features[-1]
 
     activations: list[torch.Tensor] = []
     gradients: list[torch.Tensor] = []
@@ -509,8 +501,8 @@ def _grad_cam_efficientnet_b0(
     bh = target_layer.register_full_backward_hook(_bwd)
     try:
         batch = input_batch.clone().detach().to(device)
-        model.zero_grad(set_to_none=True)
-        out = model(batch)
+        busi_model.zero_grad(set_to_none=True)
+        out = busi_model(batch)
         score = out[0, class_idx]
         score.backward(retain_graph=False)
 
@@ -579,6 +571,7 @@ class PatientUpsert(BaseModel):
     report_details: dict[str, Any] = Field(default_factory=dict)
     original_image: str = ""
     heatmap_image: str = ""
+    multi_model_result: dict[str, Any] = Field(default_factory=dict)
 
 
 class FeedbackSubmission(BaseModel):
@@ -596,7 +589,7 @@ def list_patients() -> dict[str, list[dict[str, Any]]]:
     try:
         cur = conn.execute(
             """
-            SELECT id, name, age, date, prediction, confidence, size_cm, stage, report_json, original_image, heatmap_image
+            SELECT id, name, age, date, prediction, confidence, size_cm, stage, report_json, original_image, heatmap_image, multi_model_json
             FROM patients
             ORDER BY date DESC
             """
@@ -612,6 +605,10 @@ def list_patients() -> dict[str, list[dict[str, Any]]]:
             report_details = json.loads(report_raw) if report_raw else {}
         except json.JSONDecodeError:
             report_details = {}
+        try:
+            multi_model_result = json.loads(row["multi_model_json"] or "{}")
+        except json.JSONDecodeError:
+            multi_model_result = {}
         out.append(
             {
                 "id": row["id"],
@@ -625,6 +622,7 @@ def list_patients() -> dict[str, list[dict[str, Any]]]:
                 "report_details": report_details,
                 "original_image": row["original_image"] or "",
                 "heatmap_image": row["heatmap_image"] or "",
+                "multi_model_result": multi_model_result,
             }
         )
     return {"patients": out}
@@ -633,12 +631,13 @@ def list_patients() -> dict[str, list[dict[str, Any]]]:
 @app.post("/patients")
 def upsert_patient(payload: PatientUpsert) -> dict[str, str]:
     report_json = json.dumps(payload.report_details, ensure_ascii=False)
+    multi_model_json = json.dumps(payload.multi_model_result, ensure_ascii=False)
     conn = _get_db()
     try:
         conn.execute(
             """
-            INSERT OR REPLACE INTO patients (id, name, age, date, prediction, confidence, size_cm, stage, report_json, original_image, heatmap_image)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT OR REPLACE INTO patients (id, name, age, date, prediction, confidence, size_cm, stage, report_json, original_image, heatmap_image, multi_model_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 payload.id,
@@ -652,6 +651,7 @@ def upsert_patient(payload: PatientUpsert) -> dict[str, str]:
                 report_json,
                 payload.original_image,
                 payload.heatmap_image,
+                multi_model_json,
             ),
         )
         conn.commit()
@@ -815,85 +815,61 @@ def get_feedback_stats() -> dict[str, Any]:
 
 @app.post("/predict")
 async def predict_image(file: UploadFile = File(...)):
-    if not HAS_PYTORCH_GRAD_CAM:
-        raise HTTPException(
-            status_code=500,
-            detail="Missing dependency `grad-cam`. Install with: pip install grad-cam",
-        )
     image_bytes = await file.read()
     try:
         image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Invalid image: {exc}") from exc
 
-    filename = file.filename.lower() if file.filename else ""
     input_batch = transform(image).unsqueeze(0).to(device)
+    def predict_model(model_instance: nn.Module, class_names: list[str]) -> dict[str, Any]:
+        with torch.inference_mode():
+            probabilities = torch.softmax(model_instance(input_batch)[0], dim=0)
+        predicted_idx = int(torch.argmax(probabilities).item())
+        return {
+            "prediction": class_names[predicted_idx],
+            "confidence": float(probabilities[predicted_idx].item()),
+            "probabilities": {
+                class_name: float(probabilities[index].item()) for index, class_name in enumerate(class_names)
+            },
+        }
 
-    if "normal" in filename:
-        prediction_label = "Normal"
-        confidence_score = random.uniform(0.95, 0.99)
-        size_cm = 0.0
-        stage = "N/A"
-        severity_score = "N/A"
+    busi = predict_model(busi_model, BUSI_CLASSES)
+    uclm = predict_model(uclm_model, UCLM_CLASSES)
+    bra = predict_model(bra_model, BRA_CLASSES)
+    for result, task in ((busi, "3-class classification"), (uclm, "3-class classification"), (bra, "binary classification")):
+        result["task"] = task
+    bra["probabilities"]["Normal"] = None
+    bra["note"] = "Normal classification is not supported by this model."
 
-    elif "benign" in filename:
-        prediction_label = "Benign"
-        confidence_score = random.uniform(0.92, 0.98)
-        size_cm = round(random.uniform(1.0, 3.0), 1)
-        stage = _stage_from_size(size_cm)
-        severity_score = _simulate_severity(prediction_label)
-
-    elif "malignant" in filename:
-        prediction_label = "Malignant"
-        confidence_score = random.uniform(0.94, 0.99)
-        size_cm = round(random.uniform(2.0, 4.5), 1)
-        stage = _stage_from_size(size_cm)
-        severity_score = _simulate_severity(prediction_label)
-
+    votes = [busi["prediction"], uclm["prediction"], bra["prediction"]]
+    if busi["prediction"] == "Normal" and uclm["prediction"] == "Normal":
+        consensus = {
+            "prediction": "Normal",
+            "agreement_count": 2,
+            "participating_models": 2,
+            "agreement_ratio": 1.0,
+            "status": "Agreement among Normal-capable models",
+            "note": "BUS-BRA is binary and does not classify Normal.",
+        }
     else:
-        with torch.no_grad():
-            logits = model(input_batch)
-            probs = torch.nn.functional.softmax(logits[0], dim=0)
-            print(f"\n--- AI RAW PROBABILITIES for {filename} ---")
-            print(f"Benign: {probs[0]:.4f} | Malignant: {probs[1]:.4f} | Normal: {probs[2]:.4f}\n")
-            confidence, predicted_idx = torch.max(probs, 0)
-            predicted_idx = int(predicted_idx.item())
-            confidence_score = float(confidence.item())
-            prediction_label = CLASSES[predicted_idx]
-
-        size_cm = 0.0 if prediction_label == "Normal" else round(random.uniform(0.5, 4.0), 1)
-        stage = "N/A" if prediction_label == "Normal" else _stage_from_size(size_cm)
-        severity_score = _simulate_severity(prediction_label)
-
-    try:
-        class_idx = CLASSES.index(prediction_label)
-    except ValueError:
-        class_idx = 0
-
-    heatmap_base64, cam256 = _heatmap_and_cam(image, prediction_label, input_batch, class_idx)
-
-    # Streamlit-style CAM heuristics (thresholded activation area + min-area-rect "diameter")
-    severity_metrics = None
-    if cam256 is not None and prediction_label != "Normal":
-        sev = _cam_severity_from_heatmap(cam256)
-        severity_metrics = sev
-        if sev["severity_level"] != "clean":
-            severity_score = sev["severity_label"]
-        size_est, _stage_verbose = _cam_tumor_size_cm_from_cam(cam256)
-        if sev["pixel_count"] > 0 and size_est > 0:
-            size_cm = float(size_est)
-            stage = _stage_from_size(size_cm)
-
-    report_details = _build_report_details(prediction_label, size_cm, stage, confidence_score, severity_metrics)
+        counts = {label: votes.count(label) for label in set(votes)}
+        prediction = max(counts, key=counts.get)
+        agreement_count = counts[prediction]
+        consensus = {
+            "prediction": prediction,
+            "agreement_count": agreement_count,
+            "model_count": 3,
+            "participating_models": 3,
+            "agreement_ratio": agreement_count / 3,
+            "status": "Strong agreement" if agreement_count == 3 else ("Model disagreement" if agreement_count == 2 else "High disagreement - physician review recommended"),
+        }
 
     return {
-        "prediction": prediction_label,
-        "confidence": confidence_score,
-        "severity_score": severity_score,
-        "size_cm": size_cm,
-        "stage": stage,
-        "report_details": report_details,
-        "heatmap_base64": heatmap_base64,
+        "success": True,
+        "consensus": consensus,
+        "models": {"BUSI": busi, "UCLM": uclm, "BUS-BRA": bra},
+        "image": {"width": image.width, "height": image.height},
     }
 
 

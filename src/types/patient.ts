@@ -7,6 +7,39 @@ export interface ClinicalReportDetails {
   BI_RADS: string;
 }
 
+export interface ModelProbabilities {
+  Benign: number | null;
+  Malignant: number | null;
+  Normal: number | null;
+}
+
+export interface ModelPrediction {
+  prediction: string;
+  confidence: number;
+  probabilities: ModelProbabilities;
+  task: string;
+  note?: string;
+}
+
+export interface ConsensusResult {
+  prediction: string;
+  agreement_count: number;
+  model_count?: number;
+  participating_models?: number;
+  agreement_ratio?: number;
+  status: string;
+  note?: string;
+}
+
+export interface MultiModelAnalysis {
+  consensus: ConsensusResult;
+  models: {
+    BUSI: ModelPrediction;
+    UCLM: ModelPrediction;
+    'BUS-BRA': ModelPrediction;
+  };
+}
+
 export function emptyReportDetails(): ClinicalReportDetails {
   return {
     Indication: '',
@@ -40,6 +73,7 @@ export interface PatientAnalysis {
   subtype: string;
   notes: string;
   reportDetails: ClinicalReportDetails;
+  multiModel?: MultiModelAnalysis;
 }
 
 /** Global patient record used across dashboard, list, reports, and correction */
