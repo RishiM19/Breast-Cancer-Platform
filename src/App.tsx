@@ -9,18 +9,21 @@ import { PatientList } from './components/PatientList';
 import { Settings } from './components/Settings';
 import { ModelStats } from './components/ModelStats';
 import { DiagnosticReport } from './components/DiagnosticReport';
-import type { AnalysisData, MultiModelAnalysis, PatientRecord, PatientAnalysis } from './types/patient';
-import { parseReportDetails } from './types/patient';
+import { FeedbackModal } from './components/FeedbackModal';
+import { API_BASE, responseError, submitReview } from './lib/api';
+import type { AnalysisData, PatientRecord } from './types/patient';
+import { mapPredictResponseToAnalysis, analysisDataToPatientAnalysis, mapApiPatientToPatientRecord, predictionToColor, displayResearchFinding } from './lib/inferenceAdapter';
+import type { ApiPatientRow } from './lib/inferenceAdapter';
 
 function readInitialThemeIsDark(): boolean {
   if (typeof window === 'undefined') return false;
   const stored = localStorage.getItem('theme');
   if (stored === 'dark') return true;
   if (stored === 'light') return false;
-  return window.matchMedia('(prefers-color-scheme: dark)').matches;
+  return false;
 }
 
-const API_BASE = 'http://localhost:8000';
+
 
 function fileToDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -31,81 +34,14 @@ function fileToDataUrl(file: File): Promise<string> {
   });
 }
 
-function ensureImageSrc(s: string): string {
-  if (!s) return '';
-  if (s.startsWith('data:') || s.startsWith('blob:')) return s;
-  return `data:image/jpeg;base64,${s}`;
-}
-
-function normalizeHeatmapDataUrl(raw: unknown): string {
-  if (raw == null) return '';
-  const s = String(raw).trim();
-  if (!s) return '';
-  if (s.startsWith('data:')) return s;
-  return `data:image/jpeg;base64,${s}`;
-}
-
 function parseLesionSizeCm(lesion: string): number {
   const m = lesion.match(/(\d+(?:\.\d+)?)/);
   if (!m) return 0;
   return parseFloat(m[1]);
 }
 
-function defaultTumorGrade(prediction: string): string {
-  if (prediction === 'Malignant') return 'Grade 2';
-  if (prediction === 'Benign') return 'Grade 1';
-  return 'N/A';
-}
-
-interface ApiPatientRow {
-  id: string;
-  name: string;
-  age: string;
-  date: string;
-  prediction: string;
-  confidence: number;
-  size_cm: number;
-  stage: string;
-  report_details: unknown;
-  original_image: string;
-  heatmap_image: string;
-  multi_model_result?: MultiModelAnalysis;
-}
-
-function mapApiPatientToPatientRecord(row: ApiPatientRow): PatientRecord {
-  const confPct = Number.isFinite(row.confidence)
-    ? row.confidence <= 1
-      ? Math.round(row.confidence * 100)
-      : Math.round(row.confidence)
-    : 0;
-  const prediction = row.prediction;
-  const lesionSize = row.size_cm > 0 ? `${row.size_cm} cm` : 'N/A';
-  const stageStr = row.stage === 'N/A' || !row.stage ? 'N/A' : row.stage;
-
-  return {
-    id: row.id,
-    name: row.name,
-    age: row.age,
-    date: row.date,
-    originalImage: ensureImageSrc(row.original_image),
-    heatmapImage: normalizeHeatmapDataUrl(row.heatmap_image),
-    analysis: {
-      prediction,
-      predictionColor: predictionToColor(prediction),
-      confidence: `${confPct}%`,
-      tumorGrade: defaultTumorGrade(prediction),
-      nodeStatus: 'Unknown',
-      lesionSize,
-      subtype: stageStr,
-      notes: '',
-      reportDetails: parseReportDetails(row.report_details),
-      multiModel: row.multi_model_result,
-    },
-  };
-}
-
-async function persistPatientToApi(record: PatientRecord, confidenceNum: number, sizeCm: number, stage: string) {
-  await fetch(`${API_BASE}/patients`, {
+async function persistPatientToApi(record: PatientRecord, confidenceNum: number | null, sizeCm: number, stage: string) {
+  const response = await fetch(`${API_BASE}/patients`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -114,7 +50,9 @@ async function persistPatientToApi(record: PatientRecord, confidenceNum: number,
       age: record.age,
       date: record.date,
       prediction: record.analysis.prediction,
-      confidence: confidenceNum,
+      // Existing database column is NOT NULL. Zero is only a storage placeholder;
+      // the versioned consensus metadata retains null, and adapters never display zero as a score.
+      confidence: confidenceNum ?? 0,
       size_cm: sizeCm,
       stage,
       report_details: record.analysis.reportDetails,
@@ -123,6 +61,7 @@ async function persistPatientToApi(record: PatientRecord, confidenceNum: number,
       multi_model_result: record.analysis.multiModel || {},
     }),
   });
+  if (!response.ok) throw new Error(`Could not save research result (${response.status})`);
 }
 
 type Screen =
@@ -161,61 +100,6 @@ export interface CaseRecord {
   originalImage: string;
 }
 
-export function predictionToColor(prediction: string): 'red' | 'green' | 'blue' {
-  const p = prediction.toLowerCase();
-  if (p.includes('malign')) return 'red';
-  if (p.includes('benign')) return 'green';
-  return 'blue';
-}
-
-function mapPredictResponseToAnalysis(data: Record<string, unknown>): AnalysisData {
-  const multiModel = data.models && data.consensus
-    ? ({ consensus: data.consensus, models: data.models } as MultiModelAnalysis)
-    : undefined;
-  const consensusPrediction = multiModel?.consensus.prediction;
-  const prediction = String(consensusPrediction ?? data.prediction ?? 'Normal');
-  const confRaw = multiModel?.models.BUSI.confidence ?? data.confidence;
-  const confNum =
-    typeof confRaw === 'number'
-      ? confRaw
-      : typeof confRaw === 'string'
-        ? parseFloat(confRaw)
-        : NaN;
-  const confidencePct = Number.isFinite(confNum)
-    ? confNum <= 1
-      ? Math.round(confNum * 100)
-      : Math.round(confNum)
-    : 0;
-
-  return {
-    prediction,
-    predictionColor: predictionToColor(prediction),
-    confidence: `${confidencePct}%`,
-    tumorGrade: 'N/A',
-    nodeStatus: 'Unknown',
-    lesionSize: 'N/A',
-    subtype: 'N/A',
-    originalImage: '',
-    heatmapImage: normalizeHeatmapDataUrl(data.heatmap_base64),
-    reportDetails: parseReportDetails(data.report_details),
-    multiModel,
-  };
-}
-
-function analysisDataToPatientAnalysis(data: AnalysisData): PatientAnalysis {
-  return {
-    prediction: data.prediction,
-    predictionColor: data.predictionColor,
-    confidence: data.confidence,
-    tumorGrade: data.tumorGrade,
-    nodeStatus: data.nodeStatus,
-    lesionSize: data.lesionSize,
-    subtype: data.subtype,
-    notes: data.notes ?? '',
-    reportDetails: data.reportDetails,
-  };
-}
-
 function patientToCaseRow(p: PatientRecord): CaseRecord {
   const time = (() => {
     try {
@@ -225,14 +109,14 @@ function patientToCaseRow(p: PatientRecord): CaseRecord {
       return p.date;
     }
   })();
-  const humanVerified = p.analysis.confidence.includes('Human Verified');
+  const humanVerified = p.analysis.reviewStatus==='reviewed';
   return {
     id: p.id,
     time,
-    prediction: p.analysis.prediction,
+    prediction: displayResearchFinding(p),
     predictionColor: p.analysis.predictionColor,
     confidence: p.analysis.confidence,
-    status: humanVerified ? 'Human Verified' : 'Model Complete',
+    status: humanVerified ? 'Review recorded (unverified identity)' : p.analysis.recordKind==='research' ? 'Research - unreviewed' : 'Historical - unreviewed',
     statusColor: humanVerified ? 'blue' : 'grey',
     originalImage: p.originalImage,
   };
@@ -257,16 +141,19 @@ export default function App() {
   });
 
   const [patientDatabase, setPatientDatabase] = useState<PatientRecord[]>([]);
-  const patientIdSeqRef = useRef(1042);
+
   const [activePatientId, setActivePatientId] = useState<string | null>(null);
   const [selectedReportPatientId, setSelectedReportPatientId] = useState<string | null>(null);
 
   const [currentAnalysis, setCurrentAnalysis] = useState<AnalysisData | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [workflowError,setWorkflowError]=useState('');
+  const [patientsLoading,setPatientsLoading]=useState(true);
+  const [reviewOpen,setReviewOpen]=useState(false);
 
   const [userName, setUserName] = useState(() => {
     const saved = sessionStorage.getItem('userName');
-    return saved || 'Dr. Elena Rossi';
+    return saved || 'Research user (unverified)';
   });
 
   const [isDarkMode, setIsDarkMode] = useState(readInitialThemeIsDark);
@@ -293,30 +180,21 @@ export default function App() {
     sessionStorage.setItem('userName', userName);
   }, [userName]);
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch(`${API_BASE}/patients`);
-        if (!res.ok) return;
-        const body = (await res.json()) as { patients: ApiPatientRow[] };
-        if (cancelled || !body.patients) return;
-        const mapped = body.patients.map(mapApiPatientToPatientRecord);
-        setPatientDatabase(mapped);
-        let maxSeq = 1041;
-        for (const p of mapped) {
-          const m = /^PAT-(\d+)$/.exec(p.id);
-          if (m) maxSeq = Math.max(maxSeq, parseInt(m[1], 10));
-        }
-        patientIdSeqRef.current = maxSeq + 1;
-      } catch {
-        /* offline or server down */
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const refreshPatients = useCallback(async () => {
+    setPatientsLoading(true);
+    try {
+      const res=await fetch(`${API_BASE}/patients`);
+      if(!res.ok)throw new Error(await responseError(res));
+      const body=await res.json() as {patients:ApiPatientRow[]};
+      const mapped=body.patients.map(mapApiPatientToPatientRecord);
+      setPatientDatabase(mapped);setWorkflowError('');
+      const active=mapped.find(p=>p.id===activePatientId);
+      if(active)setCurrentAnalysis({...active.analysis,originalImage:active.originalImage,heatmapImage:active.heatmapImage});
+      return mapped;
+    }catch(err){setWorkflowError(err instanceof Error?err.message:'Saved records could not be loaded.');throw err;}
+    finally{setPatientsLoading(false);}
+  },[activePatientId]);
+  useEffect(()=>{void refreshPatients().catch(()=>{});},[refreshPatients]);
 
   const recentCases = useMemo((): CaseRecord[] => {
     return patientDatabase.slice(0, 4).map(patientToCaseRow);
@@ -333,10 +211,10 @@ export default function App() {
   }, [patientDatabase, activePatientId]);
 
   useEffect(() => {
-    if (currentScreen === 'diagnostic-report' && !selectedReportPatient) {
+    if (currentScreen === 'diagnostic-report' && !selectedReportPatient && !patientsLoading) {
       setCurrentScreen('patient-list');
     }
-  }, [currentScreen, selectedReportPatient]);
+  }, [currentScreen, selectedReportPatient, patientsLoading]);
 
   const handleLogin = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -353,11 +231,13 @@ export default function App() {
     }
   };
 
-  const handleUpload = useCallback(async (file: File, patientName: string, patientAge: string) => {
-    setIsAnalyzing(true);
+  const handleUpload = useCallback(async (file: File, patientName: string, patientAge: string, sourceDomain = 'unknown') => {
+    setIsAnalyzing(true);setWorkflowError('');
     try {
       const formData = new FormData();
       formData.append('file', file);
+      formData.append('source_domain', sourceDomain);
+      formData.append('contract_version', '1.2.0');
 
       const res = await fetch(`${API_BASE}/predict`, {
         method: 'POST',
@@ -365,8 +245,7 @@ export default function App() {
       });
 
       if (!res.ok) {
-        const text = await res.text();
-        throw new Error(text || `Request failed (${res.status})`);
+        throw new Error(await responseError(res));
       }
 
       const data = (await res.json()) as Record<string, unknown>;
@@ -377,7 +256,7 @@ export default function App() {
       };
       const patientAnalysis = analysisDataToPatientAnalysis(analysisData);
 
-      const id = `PAT-${patientIdSeqRef.current++}`;
+      const id = `RESEARCH-${crypto.randomUUID()}`;
 
       const record: PatientRecord = {
         id,
@@ -389,7 +268,7 @@ export default function App() {
         analysis: patientAnalysis,
       };
 
-      const confNum = analysisData.multiModel?.models.BUSI.confidence ?? 0;
+      const confNum = null; // Abstention has no consensus score. Never borrow an individual score.
 
       await persistPatientToApi(record, confNum, 0, 'N/A');
 
@@ -402,86 +281,19 @@ export default function App() {
       setCurrentScreen('analysis');
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Analysis request failed.';
-      alert(`Could not analyze the scan. ${message}`);
+      setWorkflowError(`Could not analyze or save the scan. ${message}`);
     } finally {
       setIsAnalyzing(false);
     }
   }, []);
 
   const handleVerifyAndAccept = () => {
-    if (!currentAnalysis || !activePatientId) return;
-
-    setPatientDatabase((prev) =>
-      prev.map((p) =>
-        p.id === activePatientId
-          ? {
-              ...p,
-              analysis: {
-                ...p.analysis,
-                notes: [p.analysis.notes, 'Verified by clinician.'].filter(Boolean).join(' ').trim(),
-              },
-            }
-          : p
-      )
-    );
-
-    setCurrentScreen('dashboard');
+    if(currentAnalysis && activePatientId)setReviewOpen(true);
   };
-
-  const handleCorrection = () => {
-    setCurrentScreen('correction');
-  };
-
-  const handleCorrectionSubmit = async (newDiagnosis: string, notes: string) => {
-    if (!activePatientId) return;
-
-    const note = notes.trim();
-    const prior = patientDatabase.find((p) => p.id === activePatientId);
-    if (!prior) return;
-
-    const impressionSuffix = ` Clinician correction: ${newDiagnosis}.${note ? ` Notes: ${note}` : ''}`;
-    const nextRecord: PatientRecord = {
-      ...prior,
-      analysis: {
-        ...prior.analysis,
-        prediction: newDiagnosis,
-        predictionColor: predictionToColor(newDiagnosis),
-        confidence: '100% (Human Verified)',
-        notes: note || prior.analysis.notes,
-        reportDetails: {
-          ...prior.analysis.reportDetails,
-          Impression: `${prior.analysis.reportDetails.Impression}${impressionSuffix}`,
-        },
-      },
-    };
-
-    setPatientDatabase((prev) => prev.map((p) => (p.id === activePatientId ? nextRecord : p)));
-
-    setCurrentAnalysis((prev) =>
-      prev
-        ? {
-            ...prev,
-            prediction: newDiagnosis,
-            predictionColor: predictionToColor(newDiagnosis),
-            confidence: '100% (Human Verified)',
-            notes: note || prev.notes,
-            reportDetails: nextRecord.analysis.reportDetails,
-          }
-        : null
-    );
-
-    try {
-      await persistPatientToApi(
-        nextRecord,
-        1.0,
-        parseLesionSizeCm(nextRecord.analysis.lesionSize),
-        nextRecord.analysis.subtype
-      );
-    } catch {
-      /* ignore persist failure */
-    }
-
-    setCurrentScreen('patient-list');
+  const handleCorrection = () => setCurrentScreen('correction');
+  const handleCorrectionSubmit = async (assessment:string,notes:string,reviewerId:string) => {
+    if(!activePatientId)throw new Error('No active research record.');
+    await submitReview(activePatientId,reviewerId,notes,'independent_assessment',assessment);
   };
 
   const handleCorrectionCancel = () => {
@@ -528,130 +340,16 @@ export default function App() {
 
   if (currentScreen === 'diagnostic-report' && selectedReportPatient) {
     return (
-      <DiagnosticReport patient={selectedReportPatient} onBack={handleBackToPatientList} />
+      <DiagnosticReport patient={selectedReportPatient} onBack={handleBackToPatientList} onReviewSaved={async()=>{await refreshPatients();}} />
     );
   }
 
-  if (currentScreen === 'diagnostic-report' && !selectedReportPatient) {
+  if (currentScreen === 'diagnostic-report' && !selectedReportPatient && !patientsLoading) {
     return null;
   }
 
   if (!isAuthenticated) {
-    return (
-      <div className="min-h-screen bg-gray-100 dark:bg-gray-900 flex items-center justify-center p-4 overflow-hidden relative">
-        <motion.div
-          className="absolute w-32 h-32 rounded-full bg-[#007AFF] opacity-10"
-          animate={{
-            x: [0, 100, 0],
-            y: [0, -80, 0],
-          }}
-          transition={{
-            duration: 8,
-            repeat: Infinity,
-            ease: 'easeInOut',
-          }}
-          style={{ top: '10%', left: '10%' }}
-        />
-
-        <motion.div
-          className="absolute w-24 h-24 rounded-full bg-[#007AFF] opacity-10"
-          animate={{
-            x: [0, -60, 0],
-            y: [0, 100, 0],
-          }}
-          transition={{
-            duration: 10,
-            repeat: Infinity,
-            ease: 'easeInOut',
-          }}
-          style={{ top: '60%', right: '15%' }}
-        />
-
-        <motion.div
-          className="absolute w-40 h-40 rounded-full bg-[#007AFF] opacity-5"
-          animate={{
-            x: [0, -50, 0],
-            y: [0, 60, 0],
-          }}
-          transition={{
-            duration: 12,
-            repeat: Infinity,
-            ease: 'easeInOut',
-          }}
-          style={{ top: '20%', right: '5%' }}
-        />
-
-        <motion.div
-          className="absolute w-20 h-20 rounded-full bg-[#007AFF] opacity-10"
-          animate={{
-            x: [0, 80, 0],
-            y: [0, -50, 0],
-          }}
-          transition={{
-            duration: 9,
-            repeat: Infinity,
-            ease: 'easeInOut',
-          }}
-          style={{ bottom: '15%', left: '20%' }}
-        />
-
-        <motion.div
-          className="bg-white dark:bg-gray-800 rounded-lg shadow-md w-full max-w-md p-8 relative z-10 border border-transparent dark:border-gray-700"
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.6 }}
-        >
-          <div className="flex flex-col items-center mb-8">
-            <div className="w-16 h-16 bg-[#007AFF] rounded-full flex items-center justify-center mb-3">
-              <Activity className="w-8 h-8 text-white" strokeWidth={2} />
-            </div>
-            <h1 className="text-gray-900 dark:text-white">Lumina Clinical Intelligence</h1>
-            <p className="text-gray-500 dark:text-gray-400 text-sm mt-2 text-center">Illuminating the path to precise diagnosis.</p>
-          </div>
-
-          <form className="space-y-5" onSubmit={handleLogin}>
-            <div>
-              <label htmlFor="hospital-id" className="block text-gray-700 dark:text-gray-300 mb-2">
-                Hospital ID
-              </label>
-              <input
-                type="text"
-                id="hospital-id"
-                name="hospital-id"
-                className="w-full px-4 py-2.5 border border-gray-300 dark:bg-gray-700 dark:text-white dark:border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-[#007AFF] focus:border-transparent transition-all"
-                placeholder="demo@lumina.ai"
-              />
-            </div>
-
-            <div>
-              <label htmlFor="password" className="block text-gray-700 dark:text-gray-300 mb-2">
-                Password
-              </label>
-              <input
-                type="password"
-                id="password"
-                name="password"
-                className="w-full px-4 py-2.5 border border-gray-300 dark:bg-gray-700 dark:text-white dark:border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-[#007AFF] focus:border-transparent transition-all"
-                placeholder="demo123"
-              />
-            </div>
-
-            <button
-              type="submit"
-              className="w-full bg-[#007AFF] text-white py-3 rounded-md hover:bg-[#0062CC] transition-colors mt-6"
-            >
-              Secure Login
-            </button>
-          </form>
-
-          <div className="mt-8 pt-6 border-t border-gray-200 dark:border-gray-700">
-            <p className="text-center text-gray-500 dark:text-gray-400 text-sm">
-              System Status: <span className="text-green-600 dark:text-green-400">Online</span> | v1.4
-            </p>
-          </div>
-        </motion.div>
-      </div>
-    );
+    return <div className="l-report" style={{display:'grid',placeItems:'center'}}><section className="l-card" style={{width:'100%',maxWidth:470,padding:36}}><div className="l-brand" style={{marginBottom:28}}><div className="l-logo"><Activity/></div><div><strong>Lumina</strong><small>Breast AI Research</small></div></div><span className="l-eyebrow">Research workspace</span><h1 style={{fontSize:28}}>Explore. Inspect. Review.</h1><p className="l-muted" style={{margin:'12px 0 24px'}}>Frozen models and transparent research findings, with independent human review.</p><form className="l-stack" onSubmit={handleLogin}><label className="l-field" htmlFor="hospital-id">Hospital ID<input className="l-input" id="hospital-id" name="hospital-id" autoComplete="username" placeholder="demo@lumina.ai" required/></label><label className="l-field" htmlFor="password">Password<input className="l-input" type="password" id="password" name="password" autoComplete="current-password" placeholder="demo123" required/></label><button className="l-button l-button-primary" type="submit">Open Demo Workspace</button></form><p className="l-helper" style={{marginTop:20}}>Local research prototype. Demo sign-in does not verify identity. No clinical deployment readiness is established.</p></section></div>;
   }
 
   return (
@@ -663,6 +361,9 @@ export default function App() {
       isDarkMode={isDarkMode}
       toggleTheme={toggleTheme}
     >
+      {workflowError && <div role="alert" className="m-4 border border-red-400 bg-red-50 text-red-900 rounded p-4">{workflowError} <button onClick={()=>void refreshPatients().catch(()=>{})} className="underline">Retry loading records</button></div>}
+      {patientsLoading && <p role="status" className="px-8 py-2">Loading saved records…</p>}
+      {reviewOpen && activePatientId && currentAnalysis && <FeedbackModal caseId={activePatientId} originalPrediction={currentAnalysis.prediction} originalConfidence={currentAnalysis.confidence} researchVerdict={currentAnalysis.multiModel?.research_verdict} onClose={()=>setReviewOpen(false)} onSuccess={async()=>{await refreshPatients();}} />}
       {currentScreen === 'dashboard' && (
         <Dashboard
           onUpload={handleUpload}
@@ -679,7 +380,7 @@ export default function App() {
           onDeletePatient={handleDeletePatient}
         />
       )}
-      {currentScreen === 'model-stats' && <ModelStats patientDatabase={patientDatabase} />}
+      {currentScreen === 'model-stats' && <ModelStats />}
       {currentScreen === 'settings' && (
         <Settings onNavigate={handleNavigate} userName={userName} onUpdateUserName={handleUpdateUserName} />
       )}
@@ -688,13 +389,15 @@ export default function App() {
           analysisData={currentAnalysis}
           onVerifyAndAccept={handleVerifyAndAccept}
           onCorrection={handleCorrection}
+          onViewReport={activePatient?()=>handleViewReport(activePatient):undefined}
         />
       )}
       {currentScreen === 'correction' && (
         <CorrectionMode
-          currentPrediction={currentAnalysis?.prediction ?? 'Normal'}
+          currentPrediction={currentAnalysis?.multiModel?.research_verdict?.prediction ?? currentAnalysis?.prediction ?? 'No validated consensus available'}
           originalImage={activePatient?.originalImage}
           onSubmit={handleCorrectionSubmit}
+          onSaved={async()=>{await refreshPatients();setCurrentScreen('patient-list');}}
           onCancel={handleCorrectionCancel}
         />
       )}

@@ -1,0 +1,31 @@
+// Executed TypeScript adapters and React rendering using genuine Stage 3 responses.
+const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
+const esbuild=require('esbuild'),React=require('react'),{renderToStaticMarkup}=require('react-dom/server');
+const root=path.resolve(__dirname,'..'),inputRoot=path.join(root,'data/processed/lumina_integration_stage3'),out=process.env.LUMINA_TEST_ARTIFACT_ROOT?path.resolve(process.env.LUMINA_TEST_ARTIFACT_ROOT):inputRoot,checks=[];
+assert.ok([inputRoot,path.join(root,'data/processed/lumina_ui_verdict_upgrade')].includes(out));
+function load(name){const r=esbuild.buildSync({entryPoints:[path.join(root,name)],bundle:true,write:false,platform:'node',format:'cjs',packages:'external',jsx:'automatic',logLevel:'silent'});const m={exports:{}};new Function('require','module','exports',r.outputFiles[0].text)(require,m,m.exports);return m.exports;}
+function test(name,fn){try{fn();checks.push({name,status:'PASSED'});}catch(e){checks.push({name,status:'FAILED',error:e.stack});}}
+const api=load('src/lib/inferenceAdapter.ts'),{ExploratorySegmentation}=load('src/components/ExploratorySegmentation.tsx'),{DiagnosticReport}=load('src/components/DiagnosticReport.tsx');
+const input=JSON.parse(fs.readFileSync(path.join(inputRoot,'persistence_test_inputs.json'),'utf8')),actual=input.actual_response;
+const missing=JSON.parse(fs.readFileSync(path.join(inputRoot,'missing_checkpoint_response.json'),'utf8'));
+const copy=v=>JSON.parse(JSON.stringify(v)),render=(C,p)=>renderToStaticMarkup(React.createElement(C,p));
+test('Adapter preserves complete genuine segmentation envelope',()=>assert.deepEqual(api.mapPredictResponseToAnalysis(actual).multiModel.segmentation,actual.segmentation));
+test('Stored adapter preserves mask, overlay, probabilities and provenance',()=>assert.deepEqual(api.mapApiPatientToPatientRecord(input.after_review).analysis.multiModel.segmentation,actual.segmentation));
+test('Human review remains separate from frozen segmentation',()=>{const p=api.mapApiPatientToPatientRecord(input.after_review);assert.equal(p.analysis.humanReview.prediction,'Benign');assert.equal(p.analysis.prediction,api.ABSTENTION);assert.deepEqual(p.analysis.multiModel.segmentation,actual.segmentation);});
+test('Actual research report independently renders segmentation and Grad-CAM',()=>{const html=render(DiagnosticReport,{patient:api.mapApiPatientToPatientRecord(input.after_review),onBack:()=>{}});assert.match(html,/Exploratory Lesion Segmentation/);assert.match(html,/Show Grad-CAM attribution/);assert.match(html,/AI-predicted binary lesion mask/);assert.match(html,/Transparent AI segmentation overlay/);});
+test('Section displays genuine native dimensions and strict threshold',()=>{const html=render(ExploratorySegmentation,{result:actual.segmentation,originalImage:input.before_review.original_image});assert.match(html,/856/);assert.match(html,/606/);assert.match(html,/exact ties select background/);});
+test('Provenance includes pinned checkpoint SHA and unverified domain',()=>{const html=render(ExploratorySegmentation,{result:actual.segmentation,originalImage:''});assert.ok(html.includes(actual.segmentation.checkpoint_sha256));assert.match(html,/UCLM \(unverified\)/);assert.match(html,/Fine detail may be lost/);});
+test('Missing-checkpoint response renders no mask image or switch',()=>{const html=render(ExploratorySegmentation,{result:missing.segmentation,originalImage:''});assert.match(html,/checkpoint_missing/);assert.doesNotMatch(html,/<img|role="switch"/);});
+test('Older saved records render explicit no-segmentation notice',()=>{const html=render(ExploratorySegmentation,{originalImage:''});assert.match(html,/historical or contract 1.0/);assert.doesNotMatch(html,/<img/);});
+test('Unknown contract rejected',()=>assert.throws(()=>api.readResearchResult({...actual,contract_version:'1.2.0'})));
+test('Version 1.1 requires segmentation record',()=>{const r=copy(actual);delete r.segmentation;assert.throws(()=>api.readResearchResult(r));});
+test('Segmentation cannot be inserted in legacy contract',()=>assert.throws(()=>api.readResearchResult({...actual,contract_version:'1.0.0'})));
+test('Wrong dimensions rejected',()=>{const r=copy(actual);r.segmentation.image_width++;assert.throws(()=>api.readResearchResult(r));});
+test('Wrong checkpoint rejected',()=>{const r=copy(actual);r.segmentation.checkpoint_sha256='0'.repeat(64);assert.throws(()=>api.readResearchResult(r));});
+test('Cross-domain success rejected',()=>{const r=copy(actual);r.source_domain='BUSI';r.segmentation.requested_domain='BUSI';assert.throws(()=>api.readResearchResult(r));});
+test('Unavailable state cannot carry a mask',()=>{const r=copy(missing);r.segmentation.predicted_mask=actual.segmentation.predicted_mask;assert.throws(()=>api.readResearchResult(r));});
+test('Missing response preserves four individual classifier records',()=>{const a=api.readResearchResult(missing);assert.equal(Object.values(a.models).filter(m=>m.status==='ok').length,4);assert.equal(a.consensus.score,null);});
+test('Explicit empty-mask fixture labels uncertainty without a normal diagnosis',()=>{const fixture={...actual.segmentation,empty_mask:true};const html=render(ExploratorySegmentation,{result:fixture,originalImage:''});assert.match(html,/Empty AI-predicted foreground mask/);assert.match(html,/does not establish a normal image/);});
+test('All classifiers still exclude consensus, separate BI-RADS and retain own scores',()=>{const r=api.readResearchResult(actual);assert.equal(r.models['BUS-BRA BI-RADS'].task,'birads');assert.equal(r.models['BUS-BRA'].task,'pathology');for(const m of Object.values(r.models)){assert.equal(m.eligibility.consensus_eligible,false);assert.equal(m.score,m.probabilities[m.prediction]);}});
+const failed=checks.filter(c=>c.status==='FAILED');const report={tests_run:checks.length,passed:checks.length-failed.length,failed:failed.length,checks,interactive_browser:false,inputs:'Genuine API/SQL responses; explicitly labeled mutated contract and empty-mask display fixtures for failure handling only'};
+fs.writeFileSync(path.join(out,'stage3_frontend_test_results.json'),JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2));if(failed.length)process.exitCode=1;
