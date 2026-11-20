@@ -28,6 +28,7 @@ def database_path(root: Path, environ=None) -> Path:
     path = Path(override).resolve()
     allowed = [(root / f"data/processed/lumina_integration_stage{stage}/databases").resolve() for stage in (2, 3)]
     allowed.append((root / "data/processed/lumina_ui_verdict_upgrade/databases").resolve())
+    allowed.append((root / "data/processed/busi_runtime_diagnosis_20261026/databases").resolve())
     if not any(path.is_relative_to(folder) for folder in allowed) or path.suffix not in {".db", ".sqlite3"} or not path.parent.is_dir():
         raise RuntimeError("Test database must be in a dedicated existing integration databases directory")
     if path == production or (path.exists() and path.samefile(production)):

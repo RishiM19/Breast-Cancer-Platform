@@ -14,6 +14,7 @@ import { API_BASE, responseError, submitReview } from './lib/api';
 import type { AnalysisData, PatientRecord } from './types/patient';
 import { mapPredictResponseToAnalysis, analysisDataToPatientAnalysis, mapApiPatientToPatientRecord, predictionToColor, displayResearchFinding } from './lib/inferenceAdapter';
 import type { ApiPatientRow } from './lib/inferenceAdapter';
+import { createLatestRequestGate } from './lib/latestRequest';
 
 function readInitialThemeIsDark(): boolean {
   if (typeof window === 'undefined') return false;
@@ -143,6 +144,9 @@ export default function App() {
   const [patientDatabase, setPatientDatabase] = useState<PatientRecord[]>([]);
 
   const [activePatientId, setActivePatientId] = useState<string | null>(null);
+  const activePatientIdRef=useRef<string|null>(null);
+  const refreshGate=useRef(createLatestRequestGate());
+  const uploadGate=useRef(createLatestRequestGate());
   const [selectedReportPatientId, setSelectedReportPatientId] = useState<string | null>(null);
 
   const [currentAnalysis, setCurrentAnalysis] = useState<AnalysisData | null>(null);
@@ -181,18 +185,22 @@ export default function App() {
   }, [userName]);
 
   const refreshPatients = useCallback(async () => {
+    const request=refreshGate.current.begin();
+    const requestedActiveId=activePatientIdRef.current;
     setPatientsLoading(true);
     try {
       const res=await fetch(`${API_BASE}/patients`);
       if(!res.ok)throw new Error(await responseError(res));
       const body=await res.json() as {patients:ApiPatientRow[]};
       const mapped=body.patients.map(mapApiPatientToPatientRecord);
+      if(!request.isCurrent())return mapped;
       setPatientDatabase(mapped);setWorkflowError('');
-      const active=mapped.find(p=>p.id===activePatientId);
+      const active=requestedActiveId===activePatientIdRef.current
+        ?mapped.find(p=>p.id===requestedActiveId):undefined;
       if(active)setCurrentAnalysis({...active.analysis,originalImage:active.originalImage,heatmapImage:active.heatmapImage});
       return mapped;
-    }catch(err){setWorkflowError(err instanceof Error?err.message:'Saved records could not be loaded.');throw err;}
-    finally{setPatientsLoading(false);}
+    }catch(err){if(request.isCurrent())setWorkflowError(err instanceof Error?err.message:'Saved records could not be loaded.');throw err;}
+    finally{if(request.isCurrent())setPatientsLoading(false);}
   },[activePatientId]);
   useEffect(()=>{void refreshPatients().catch(()=>{});},[refreshPatients]);
 
@@ -232,6 +240,7 @@ export default function App() {
   };
 
   const handleUpload = useCallback(async (file: File, patientName: string, patientAge: string, sourceDomain = 'unknown') => {
+    const request=uploadGate.current.begin();
     setIsAnalyzing(true);setWorkflowError('');
     try {
       const formData = new FormData();
@@ -250,6 +259,7 @@ export default function App() {
 
       const data = (await res.json()) as Record<string, unknown>;
       const originalDataUrl = await fileToDataUrl(file);
+      if(!request.isCurrent())return;
       const analysisData: AnalysisData = {
         ...mapPredictResponseToAnalysis(data),
         originalImage: originalDataUrl,
@@ -271,6 +281,12 @@ export default function App() {
       const confNum = null; // Abstention has no consensus score. Never borrow an individual score.
 
       await persistPatientToApi(record, confNum, 0, 'N/A');
+      if(!request.isCurrent())return;
+
+      // An older /patients reload must never replace this newly saved scan.
+      refreshGate.current.invalidate();
+      setPatientsLoading(false);
+      activePatientIdRef.current=id;
 
       setPatientDatabase((prev) => {
         const filtered = prev.filter((p) => p.id !== id);
@@ -281,9 +297,9 @@ export default function App() {
       setCurrentScreen('analysis');
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Analysis request failed.';
-      setWorkflowError(`Could not analyze or save the scan. ${message}`);
+      if(request.isCurrent())setWorkflowError(`Could not analyze or save the scan. ${message}`);
     } finally {
-      setIsAnalyzing(false);
+      if(request.isCurrent())setIsAnalyzing(false);
     }
   }, []);
 
@@ -321,6 +337,12 @@ export default function App() {
         throw new Error(text || `Delete failed (${res.status})`);
       }
       setPatientDatabase((prev) => prev.filter((p) => p.id !== id));
+      if(activePatientIdRef.current===id) {
+        activePatientIdRef.current=null;
+        refreshGate.current.invalidate();
+        setPatientsLoading(false);
+        setCurrentAnalysis(null);
+      }
       setActivePatientId((prev) => (prev === id ? null : prev));
       setSelectedReportPatientId((prev) => (prev === id ? null : prev));
     } catch (err) {
